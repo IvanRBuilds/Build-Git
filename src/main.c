@@ -289,6 +289,106 @@ int main(int argc, char *argv[]) {
         free(compressed_blob);
 
     }
+    
+    else if (strcmp(command, "ls-tree") == 0){
+        if (argc < 3){
+            fprintf(stderr, "Usage: ./your-program ls-tree <tree_sha>\n");
+            return 1;
+        }
+        // Set constant for reading sha
+        const char *tree_sha = argv[2];
+        char dir[3], filename[39], path[1024];
+
+        strncpy(dir, tree_sha, 2);
+        dir[2] = '\0';
+        strncpy(filename, tree_sha + 2, 38);
+        filename[38] = '\0';
+        snprintf(path, sizeof(path), ".git/objects/%s/%s", dir, filename);
+
+        // Open object file
+        FILE *file = fopen(path, "rb");
+        if (!file){
+            fprintf(stderr, "Error opening tree object: %s\n", strerror(errno));
+            return 1;
+        }
+        
+        // Get file size
+        fseek(file, 0, SEEK_END);
+        long f_size = ftell(file);
+        rewind(file);
+
+        // Read compressed data
+        unsigned char *compressed_data = malloc(f_size);
+        fread(compressed_data, 1, f_size, file);
+        fclose(file);
+
+        // Prepare zlib stream
+        z_stream stream = {0};
+        inflateInit(&stream);
+
+        stream.next_in = compressed_data;
+        stream.avail_in = f_size;
+
+        // Allocate space for decompressed data
+        unsigned long out_size = f_size * 4; // TODO: Consider making a dynamic buffer for larger tree objects
+        unsigned char *decompressed = malloc(out_size);
+        stream.next_out = decompressed;
+        stream.avail_out = out_size;
+
+        // Decompress
+        int result = inflate(&stream, Z_FINISH);
+        if (result != Z_STREAM_END){
+            fprintf(stderr, "Failed to decompress tree object\n");
+            inflateEnd(&stream);
+            free(compressed_data);
+            free(decompressed);
+            return 1;
+        }
+
+        // Decompressed now has the full tree object data
+        inflateEnd(&stream);
+        free(compressed_data);
+
+        // Move pointer past "tree <size>\0"
+        char *entry_ptr = (char*)decompressed; // type cast unsigned char to char
+        while (*entry_ptr != '\0') entry_ptr++;
+        entry_ptr++; // pass the null byte
+
+        while (entry_ptr < (char*)decompressed + stream.total_out){
+            // mode like "100646", max 6 + null
+            char mode[7]; 
+            int i = 0;
+            while(*entry_ptr != ' '){
+                mode[i++] = *entry_ptr++;
+            }
+            mode[i] = '\0';
+            entry_ptr++; //skip space
+
+            // Git filenames are usually < 256 characters
+            char filename[256]; 
+            i = 0;
+            while (*entry_ptr != '\0'){
+                filename[i++] = *entry_ptr++;
+            }
+            filename[i] = '\0';
+            entry_ptr++; // skip null byte
+
+            unsigned char sha_raw[20];
+            memcpy(sha_raw, entry_ptr, 20);
+            entry_ptr += 20;
+            
+            // 40 chars + null terminator
+            char sha_hex[41];
+            for (int j = 0; j < 20; j++){
+                sprintf(sha_hex + j * 2, "%02x", sha_raw[j]);
+            }
+            sha_hex[40] = '\0';
+
+            printf("%s %s %s\t%s\n", mode, strcmp(mode, "4000") == 0 ? "tree" : "blob", sha_hex, filename);
+        
+        }
+
+    }
     else {
         fprintf(stderr, "Unknown command %s\n", command);
         return 1;
